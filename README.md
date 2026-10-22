@@ -6,6 +6,17 @@ technical free throws before the first possession included).
 
 Site: https://mattrudy13.github.io/nba-first-minute/
 
+## At a glance
+
+- **What it does:** reads each game's play-by-play to find when each team first scored, shows team
+  splits and close calls, and saves a Yes chance before tip-off that is graded after the games.
+- **How it was tested:** team-based estimates (each team's scoring rate, its opponent's allowed rate, home/away,
+  last season's rates, recency weighting, the link between the two sides) were fitted on October–January 2025-26 and
+  tested on February–April. None beat the plain league rate (41.8% Yes), so the live estimate is the
+  league rate and the team numbers are shown as context only.
+- **Live record:** the first saved estimate is Oct 22, 2026; graded days build up on the Model page.
+- **Built with:** JavaScript (Node), GitHub Actions on a schedule, GitHub Pages and ESPN's public API.
+
 ## Pages
 
 - **Today** (`index.html`): today's chance per game, the break-even prices for Yes and No, the slate
