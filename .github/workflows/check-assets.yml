@@ -1,0 +1,18 @@
+name: Check asset stamps
+
+# Fails (and GitHub emails) if a push changed model.js / common.js / style.css without re-stamping the
+# ?v= hashes in the HTML. Fix: node scripts/stamp-assets.mjs, then commit.
+on:
+  push:
+    paths: ["**.html", "model.js", "common.js", "style.css", "scripts/stamp-assets.mjs"]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: node scripts/stamp-assets.mjs --check
