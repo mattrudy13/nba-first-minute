@@ -36,14 +36,16 @@ function firstPoints(plays, homeId, awayId) {
   return { hFirst, aFirst, h60, a60, yes: h60 && a60, firstScorer };
 }
 
-// ---- Model: each side's chance of scoring in the first minute, then both ----
+// ---- Model ----
 
-// Fitted by scripts/backtest.mjs (fit Oct–Jan 2025-26, holdout Feb–Apr). A term is switched off with
-// Infinity (offK/defK), 0 (priorGames), Infinity (halfLife) or false (home). Terms stay only if they
-// lower holdout log loss; the Model page lists what each one did.
+// The live estimate is the league's Yes rate so far this season, the same for every game, with last
+// season's rate as a prior. The 2025-26 backtest (scripts/backtest.mjs) found no team-based estimate
+// that beat it on the Feb–Apr holdout, and the pregame total and spread showed no trend either.
+// The team terms below stay for the backtest: a term is switched off with Infinity (offK/defK/halfLife),
+// 0 (priorGames) or false (home).
 const MODEL = {
   version: 1,
-  leaguePrior: 200, // sides: last season's league rate counts as this many team-games this season
+  leaguePrior: 400, // sides (team-games): last season's rates count this much; the Yes rate gets half (200 games)
   offK: Infinity, // league-average pseudo-games mixed into a team's own scoring rate
   defK: Infinity, // same, for the rate a team allows
   priorGames: 0, // last season's team rate counts as this many games
@@ -151,9 +153,46 @@ function yesChance(pA, pB, rho) {
 
 const logLoss = (p, hit) => -Math.log(hit ? p : 1 - p);
 
+// Fair American odds for a chance: 0.4 → +150, 0.6 → −150. A price better than this is +EV.
+function americanOdds(p) {
+  if (!(p > 0 && p < 1)) return null;
+  return p >= 0.5 ? -100 * p / (1 - p) : 100 * (1 - p) / p;
+}
+
+// ---- Team splits ----
+
+// A team scored "close" when its first point came just after the cutoff (0:61–0:75, i.e. 10:59–10:45).
+const NEAR_MISS = 75;
+
+// Per team over the given finished games: games, scored by 11:00 (overall/home/away), allowed,
+// both scored, first scored, seconds to the first point (median), and close calls.
+function teamSplits(games) {
+  const t = {};
+  const row = (tm) => (t[tm] ??= { tm, gp: 0, scored: 0, allowed: 0, yes: 0, first: 0, hGp: 0, hScored: 0, aGp: 0, aScored: 0, near: 0, times: [] });
+  for (const g of games) {
+    for (const side of ["home", "away"]) {
+      const r = row(g[side]);
+      const mine = side === "home" ? g.h60 : g.a60, theirs = side === "home" ? g.a60 : g.h60;
+      const t1 = side === "home" ? g.hFirst : g.aFirst;
+      r.gp++; r.scored += mine; r.allowed += theirs; r.yes += g.yes; r.first += g.firstScorer === side;
+      if (side === "home") { r.hGp++; r.hScored += mine; } else { r.aGp++; r.aScored += mine; }
+      if (!mine && t1 != null && t1 <= NEAR_MISS) r.near++;
+      if (t1 != null) r.times.push(t1);
+    }
+  }
+  return Object.values(t).map(({ times, ...r }) => ({ ...r, median: median(times) }));
+}
+
+function median(xs) {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b), m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     FIRST_MINUTE, clockSeconds, firstPoints,
     MODEL, logit, sigmoid, finishedGames, seasonRates, teamHistory, leagueRates, gameChance, yesChance, logLoss,
+    americanOdds, NEAR_MISS, teamSplits, median,
   };
 }

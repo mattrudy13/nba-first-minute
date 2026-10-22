@@ -6,8 +6,8 @@
 //   node scripts/backtest.mjs 2025
 //
 // Every combination of terms is fitted on the fit window by grid search (rho fitted on top). Terms are
-// then dropped one at a time while dropping one lowers holdout log loss (the keep rule). The chosen
-// terms' constants are refitted on the whole season for live use.
+// then dropped one at a time while dropping one lowers holdout log loss (the keep rule), and the best
+// team model goes live only if it also beats the plain league Yes rate on the holdout.
 
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -128,6 +128,23 @@ function vsLeague(pred, rho) {
   return { diff: mean, se: sd / Math.sqrt(diffs.length) };
 }
 
+// The live estimate is the league Yes rate; scan how much last season's rate should count.
+const priorScan = [0, 100, 200, 400, 800, 1600].map((leaguePrior) => {
+  const loss = { fit: [0, 0], hold: [0, 0] };
+  const done = [];
+  for (let i = 0; i < games.length; ) {
+    const lg = M.leagueRates(done, prev, { leaguePrior });
+    let j = i;
+    for (; j < games.length && games[j].d === games[i].d; j++) {
+      const w = isFit[j] ? loss.fit : loss.hold;
+      w[0] += M.logLoss(M.yesChance(lg.yes, 1, 0), games[j].yes); w[1]++;
+    }
+    for (let k = i; k < j; k++) done.push(games[k]);
+    i = j;
+  }
+  return { leaguePrior, fit: loss.fit[0] / loss.fit[1], hold: loss.hold[0] / loss.hold[1] };
+});
+
 // Keep rule: from all terms, drop the term whose removal lowers holdout log loss most; repeat.
 let chosen = [...TERMS];
 const steps = [];
@@ -143,9 +160,11 @@ for (;;) {
   chosen = chosen.filter((x) => x !== best.t);
 }
 const pick = fitted[subsetKey(chosen)];
+// Last step of the keep rule: the best team model must also beat the plain league Yes rate.
+const beatsLeague = pick.hold < baseLoss("hold");
 const live = fitSubset(chosen, "all");
 
-// Calibration of the chosen model's holdout chances.
+// Calibration of the best team model's holdout chances (can it tell games apart?).
 const BUCKETS = [0, 0.35, 0.4, 0.45, 0.5, 1];
 const calibration = BUCKETS.slice(0, -1).map((lo, i) => {
   const ks = holdIdx.filter((k) => { const p = M.yesChance(pick.pred[k].pHome, pick.pred[k].pAway, pick.m.rho); return p >= lo && p < BUCKETS[i + 1]; });
@@ -171,6 +190,8 @@ const out = {
     .sort((a, b) => a.hold - b.hold),
   keepRule: steps.map((s) => ({ drop: s.drop, from: round(s.from), to: round(s.to) })),
   chosen: { terms: chosen, fitParams: params(pick.m), hold: round(pick.hold), liveParams: params(live.m) },
+  leaguePriorScan: priorScan.map((x) => ({ leaguePrior: x.leaguePrior, fit: round(x.fit), hold: round(x.hold) })),
+  live: beatsLeague ? "team" : "leagueYes",
   calibration: calibration.map((c) => ({ ...c, predicted: round(c.predicted), actual: round(c.actual) })),
 };
 // JSON has no Infinity: a switched-off term is stored as null.
@@ -182,5 +203,7 @@ console.log(`  league Yes rate        fit ${fmt(out.baselines.leagueYes.fit)}  h
 console.log(`  raw team-rate product  fit ${fmt(out.baselines.rawProduct.fit)}  hold ${fmt(out.baselines.rawProduct.hold)}`);
 for (const c of out.combos) console.log(`  ${subsetKey(c.terms).padEnd(40)} fit ${fmt(c.fit)}  hold ${fmt(c.hold)}  vs league ${c.diff >= 0 ? "+" : ""}${c.diff.toFixed(4)} ± ${c.se.toFixed(4)}  ${JSON.stringify(c.params)}`);
 console.log("keep rule:", steps.map((s) => `drop ${s.drop} (${fmt(s.from)} → ${fmt(s.to)})`).join(", ") || "nothing dropped");
-console.log("chosen:", subsetKey(chosen), "fit params", JSON.stringify(params(pick.m)), "→ live (whole season)", JSON.stringify(params(live.m)));
+console.log(beatsLeague ? "best team model beats the league Yes rate" : "live estimate: league Yes rate (no team model beat it on the holdout)");
+console.log("best team model:", subsetKey(chosen), "fit params", JSON.stringify(params(pick.m)), "→ live (whole season)", JSON.stringify(params(live.m)));
+console.log("league prior:", priorScan.map((x) => `${x.leaguePrior}: fit ${fmt(x.fit)} hold ${fmt(x.hold)}`).join(" | "));
 console.log("calibration (holdout):", calibration.map((c) => `${c.lo}-${c.hi}: n ${c.n}, ${c.predicted == null ? "–" : (100 * c.predicted).toFixed(1)}% vs ${c.actual == null ? "–" : (100 * c.actual).toFixed(1)}%`).join(" | "));
