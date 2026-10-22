@@ -1,0 +1,61 @@
+name: Update data
+
+on:
+  schedule:
+    # Four times a day, October through April (UTC): 08:15 grades the night before once every
+    # game is final; 14:15, 17:15 and 21:15 save the day's estimate before the first tip. GitHub
+    # can start scheduled runs hours late, so there are three chances before tip-off; a day with
+    # no run before its first tip shows as "not saved" and is never graded on a late one.
+    - cron: "15 8,14,17,21 * 10-12,1-4 *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-data
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Check out the branch tip, not the commit that triggered the run: a re-run or a run that
+      # waited in the concurrency queue would otherwise build on stale data and conflict on push.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Build data
+        run: node scripts/build-data.mjs
+      - name: Predict
+        run: node scripts/predict.mjs
+      - name: Grade
+        run: node scripts/grade.mjs
+      - name: Commit if changed
+        run: |
+          # `updated` changes on every run, so ignore it when deciding whether anything changed.
+          node -e '
+            const { execSync } = require("child_process");
+            const changed = execSync("git ls-files --modified --others --exclude-standard -- data").toString().split("\n").filter(Boolean);
+            const strip = (s) => s.replace(/"updated":"[^"]*",?/g, "");
+            const fs = require("fs");
+            const real = changed.some((f) => {
+              let old = "";
+              try { old = execSync(`git show HEAD:${f}`, { maxBuffer: 64 << 20 }).toString(); } catch { return true; }
+              return strip(old) !== strip(fs.readFileSync(f, "utf8"));
+            });
+            fs.writeFileSync(process.env.GITHUB_ENV, `DATA_CHANGED=${real}\n`, { flag: "a" });
+          '
+      - name: Push
+        if: env.DATA_CHANGED == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          git commit -m "data: update $(date -u +%Y-%m-%dT%H:%MZ)"
+          git pull --rebase -q
+          git push
