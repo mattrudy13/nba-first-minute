@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Model · NBA First Minute</title>
+  <meta name="description" content="How the first-minute estimate works, its graded record this season, and the 2025-26 backtest of team-based estimates.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="style.css?v=30a15c40">
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap">
+      <a class="wordmark" href="./">First <span>Minute</span></a>
+      <nav class="tabs">
+        <a href="./">Today</a>
+        <a href="teams.html">Teams</a>
+        <a href="games.html">Games</a>
+        <a href="model.html" aria-current="page">Model</a>
+        <button type="button" class="theme-btn" id="theme" aria-label="Switch theme">☾</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="page-head">
+      <h1>Model</h1>
+      <p class="sub">The estimate is the league's Yes rate so far. Team-based estimates were tested on last season and none did better. <span class="updated" id="updated"></span></p>
+    </div>
+    <div id="status" hidden></div>
+
+    <section class="card">
+      <div class="card-head"><h2>This season's record</h2><span class="updated" id="recLbl"></span></div>
+      <div class="tiles" id="recTiles"></div>
+      <div class="table-wrap" style="margin-top:1rem"><div id="record"></div></div>
+      <p class="note">Each day's estimate is saved before the first game and locked at tip-off; that version is the one graded. <b>Log loss</b> scores a chance against what happened (lower is better; always saying 50% scores 0.693).</p>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>2025-26 backtest</h2><span class="updated" id="btLbl"></span></div>
+      <p class="note" id="verdict"></p>
+      <div class="table-wrap" style="margin-top:.6rem"><div id="bt"></div></div>
+      <p class="note" id="btNote"></p>
+    </section>
+
+    <section class="two-col">
+      <div class="card">
+        <div class="card-head"><h2>Can it tell games apart?</h2></div>
+        <div class="calib" id="calib"></div>
+        <div class="legend"><span><i></i>Best team model's chance</span><span><b></b>What happened</span></div>
+        <p class="note" id="calibNote"></p>
+      </div>
+      <div class="card prose">
+        <div class="card-head"><h2>How it works</h2></div>
+        <p><b>The prop.</b> Yes if both teams score by 11:00 on the first-quarter clock. Any point counts: field goals, free throws (at exactly 11:00 too) and technical free throws before the first possession.</p>
+        <p><b>The data.</b> ESPN's play-by-play for every regular-season and NBA Cup game. A team's first point is its first scoring play of the first quarter.</p>
+        <p><b>The estimate.</b> The share of this season's games that hit Yes, with last season's rate counting as <span id="prior"></span> games, so early in the season it leans on last season. It's the same for every game.</p>
+        <p><b>Break-even.</b> A chance <i>p</i> is worth fair odds of +100·(1−<i>p</i>)/<i>p</i> below 50% and −100·<i>p</i>/(1−<i>p</i>) above. 40% → +150 for Yes and −150 for No. A sportsbook's price has to beat that to be a good bet.</p>
+        <p><b>What was tested.</b> Each team's own scoring rate, the rate its opponent allows, home/away, last season's team rates, weighting recent games more, and the correlation between the two sides. Fitted on Oct–Jan, judged on Feb–Apr. A piece stays only if it lowers holdout log loss, and the result has to beat the league rate.</p>
+      </div>
+    </section>
+
+    <footer>Data from ESPN's play-by-play, refreshed automatically during the season. For information only.</footer>
+  </main>
+
+  <script src="model.js?v=3acce58e"></script>
+  <script src="common.js?v=b1addf77"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const TERM_NAMES = { offK: "team scoring rate", defK: "opponent's allowed rate", home: "home/away", priorGames: "last season's team rates", halfLife: "recent games weighted more" };
+    const termText = (terms) => (terms.length ? terms.map((t) => TERM_NAMES[t]).join(" + ") : "league rates only");
+
+    (async () => {
+      try {
+        const seasons = await getSeasons();
+        const season = seasons.current;
+        const [data, preds, bt] = await Promise.all([
+          getData(`${season}.json`),
+          getData(`predictions-${season}.json`, { optional: true }),
+          getData(`backtest-${season - 1}.json`, { optional: true }),
+        ]);
+        $("updated").textContent = data.updated ? `Updated ${stampText(data.updated)}.` : "";
+        $("prior").textContent = MODEL.leaguePrior / 2;
+
+        // ---- Record ----
+        const days = Object.entries(preds?.days ?? {}).filter(([, x]) => x.result).sort((a, b) => (a[0] < b[0] ? 1 : -1));
+        const games = days.reduce((s, [, x]) => s + x.result.games, 0);
+        const hits = days.reduce((s, [, x]) => s + x.result.yes, 0);
+        const expected = days.reduce((s, [, x]) => s + x.yes * x.result.games, 0);
+        const ll = games ? days.reduce((s, [, x]) => s + x.result.logLoss * x.result.games, 0) / games : null;
+        $("recLbl").textContent = seasonLabel(season);
+        const tile = (k, v, s) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s}</div></div>`;
+        $("recTiles").innerHTML = [
+          tile("Days graded", days.length, `${games} games`),
+          tile("Yes hits", games ? hits : "–", games ? `${fmt.pct(hits / games)} of games` : "none yet"),
+          tile("Expected", games ? expected.toFixed(1) : "–", "from the saved chances"),
+          tile("Log loss", fmt.d4(ll), "lower is better"),
+        ].join("");
+        renderTable($("record"), days.map(([d, x]) => ({ d, ...x })), [
+          { key: "d", label: "Date", cls: "l", fmt: (r) => `<a href="./?d=${r.d}">${dateText(r.d)}</a>` },
+          { key: "yes", label: "Saved chance", fmt: (r) => fmt.pct(r.yes) },
+          { key: "games", label: "Games", sort: (r) => r.result.games, fmt: (r) => r.result.games },
+          { key: "hits", label: "Yes", sort: (r) => r.result.yes, fmt: (r) => `${r.result.yes} <span class="muted">(${fmt.pct0(r.result.yes / r.result.games)})</span>` },
+          { key: "ll", label: "Log loss", sort: (r) => r.result.logLoss, fmt: (r) => fmt.d4(r.result.logLoss) },
+        ], { sort: "d", dir: "desc" }, () => {}, "No graded days yet. The first saved estimate is graded once that day's games are final.");
+
+        // ---- Backtest ----
+        if (!bt) throw new Error("Backtest file missing.");
+        $("btLbl").textContent = `Fit ${dateText(bt.fitWindow.from, { month: "short", day: "numeric" })}–${dateText(bt.fitWindow.to, { month: "short", day: "numeric" })} (${bt.fitWindow.games} games) · holdout ${dateText(bt.holdout.from, { month: "short", day: "numeric" })}–${dateText(bt.holdout.to, { month: "short", day: "numeric" })} (${bt.holdout.games})`;
+        const same = (a, b) => a.length === b.length && a.every((t) => b.includes(t));
+        const combo = (terms) => bt.combos.find((c) => same(c.terms, terms));
+        const best = combo(bt.chosen.terms);
+        const rows = [
+          { name: "League Yes rate so far", note: "the live estimate", fit: bt.baselines.leagueYes.fit, hold: bt.baselines.leagueYes.hold, diff: 0, se: null, _cls: "best" },
+          { name: "Best team model", note: termText(best.terms), ...best },
+          ...["offK", "defK"].map((t) => ({ name: TERM_NAMES[t][0].toUpperCase() + TERM_NAMES[t].slice(1), note: "on its own", ...combo([t]) })),
+          { name: "League rates, both sides", note: "no team information", ...combo([]) },
+          { name: "Raw team rates multiplied", note: "no shrinkage", fit: bt.baselines.rawProduct.fit, hold: bt.baselines.rawProduct.hold, diff: bt.baselines.rawProduct.hold - bt.baselines.leagueYes.hold, se: null },
+        ];
+        renderTable($("bt"), rows, [
+          { key: "name", label: "Estimate", cls: "l text", fmt: (r) => `<b>${esc(r.name)}</b><br><span class="muted">${esc(r.note)}</span>` },
+          { key: "fit", label: "Fit log loss", cls: "hide-sm", fmt: (r) => fmt.d4(r.fit) },
+          { key: "hold", label: "Holdout log loss", fmt: (r) => fmt.d4(r.hold) },
+          { key: "diff", label: "vs league rate", fmt: (r) => (r.diff ? `<span class="${r.diff > 0 ? "neg" : "pos"}">${r.diff > 0 ? "+" : ""}${r.diff.toFixed(4)}</span>${r.se != null ? ` <span class="muted">± ${r.se.toFixed(4)}</span>` : ""}` : "–") },
+        ], { nosort: true }, () => {});
+        $("verdict").innerHTML = bt.live === "leagueYes"
+          ? `<b>No team-based estimate beat the plain league rate</b> on the Feb–Apr holdout (${bt.holdout.games} games, ${fmt.pct(bt.holdout.yesRate)} Yes). Positive differences below mean worse than the league rate; all are within about one standard error, i.e. noise.`
+          : `The best team model beat the league rate on the holdout.`;
+        const scan = bt.leaguePriorScan.map((x) => `${x.leaguePrior / 2}: ${x.fit.toFixed(4)}`).join(", ");
+        $("btNote").innerHTML = `How much last season's league rate should count (games: fit log loss): ${scan}. ${MODEL.leaguePrior / 2} was best on the fit window; the differences are tiny. Pregame totals and spreads (checked separately) showed no trend either.`;
+
+        // ---- Calibration of the best team model ----
+        const cal = bt.calibration.filter((c) => c.n);
+        const scale = 0.6;
+        $("calib").innerHTML = cal.map((c) => `
+          <div class="row"><span>${fmt.pct0(c.lo)}–${fmt.pct0(c.hi)}</span>
+          <span class="track"><i style="width:${(100 * c.predicted / scale).toFixed(1)}%"></i><b style="left:calc(${(100 * c.actual / scale).toFixed(1)}% - 1px)"></b></span>
+          <span>${fmt.pct(c.predicted)} → ${fmt.pct(c.actual)} <span class="muted">(${c.n})</span></span></div>`).join("");
+        const top = cal.reduce((a, c) => (c.n > a.n ? c : a), cal[0]);
+        const total = cal.reduce((s, c) => s + c.n, 0);
+        $("calibNote").textContent = `Holdout games grouped by the best team model's chance (bars on a 0–60% scale). ${top.n} of ${total} games land in ${fmt.pct0(top.lo)}–${fmt.pct0(top.hi)}: even the best team model barely separates one game from another, and the small groups outside it are too few to judge.`;
+      } catch (err) {
+        showError(err);
+      }
+    })();
+  </script>
+</body>
+</html>

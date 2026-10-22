@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Today · NBA First Minute</title>
+  <meta name="description" content="Tonight's chance that both NBA teams score in the first minute, the break-even prices, and each team's first-minute scoring.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="style.css?v=30a15c40">
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap">
+      <a class="wordmark" href="./">First <span>Minute</span></a>
+      <nav class="tabs">
+        <a href="./" aria-current="page">Today</a>
+        <a href="teams.html">Teams</a>
+        <a href="games.html">Games</a>
+        <a href="model.html">Model</a>
+        <button type="button" class="theme-btn" id="theme" aria-label="Switch theme">☾</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="page-head">
+      <h1 id="title">Tonight</h1>
+      <p class="sub">Do both teams score in the first minute? A point with 11:00 or more on the first-quarter clock counts, free throws and technicals included. <span class="updated" id="updated"></span></p>
+    </div>
+    <div id="status" hidden></div>
+
+    <section class="card hero" id="hero" hidden>
+      <div>
+        <div class="card-head"><h2>Chance per game</h2><span id="saved"></span></div>
+        <div class="big" id="yes"></div>
+        <p class="note" id="basis"></p>
+      </div>
+      <div>
+        <div class="card-head"><h2>Break-even prices</h2></div>
+        <div class="prices">
+          <div class="price"><div class="k">Yes</div><div class="v" id="pYes"></div><div class="s" id="sYes"></div></div>
+          <div class="price"><div class="k">No</div><div class="v" id="pNo"></div><div class="s" id="sNo"></div></div>
+        </div>
+        <p class="note">Fair odds for the chance on the left, with no sportsbook margin. The same for every game: no team-based estimate beat the league rate in testing (see <a href="model.html">Model</a>).</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2 id="slateTitle">Games</h2>
+        <div class="daynav" id="daynav"></div>
+      </div>
+      <div class="slate" id="slate"></div>
+      <p class="note">Team rates are this season's games (last season's rate beside them). They're context, not a prediction: team rates barely carry from one stretch of games to the next.</p>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>Season so far</h2><span class="updated" id="seasonLbl"></span></div>
+      <div class="tiles" id="tiles"></div>
+    </section>
+
+    <footer>Data from ESPN's play-by-play, refreshed automatically during the season. For information only.</footer>
+  </main>
+
+  <script src="model.js?v=3acce58e"></script>
+  <script src="common.js?v=b1addf77"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    (async () => {
+      try {
+        const seasons = await getSeasons();
+        const season = seasons.current;
+        const [data, prevData, preds] = await Promise.all([
+          getData(`${season}.json`),
+          getData(`${season - 1}.json`, { optional: true }),
+          getData(`predictions-${season}.json`, { optional: true }),
+        ]);
+        const teams = data.teams;
+        const prev = seasonRates(finishedGames(prevData));
+        const prevTeams = Object.fromEntries(teamSplits(finishedGames(prevData)).map((r) => [r.tm, r]));
+        $("updated").textContent = data.updated ? `Updated ${stampText(data.updated)}.` : "";
+
+        // The day to show: ?d=, else today if it has games, else the next game day, else the last one.
+        const all = Object.entries(data.games).map(([gid, g]) => ({ gid, ...g }));
+        const days = [...new Set(all.map((g) => g.d))].sort();
+        const today = easternToday();
+        const want = getParams().d;
+        const day = days.includes(want) ? want : days.find((d) => d >= today) ?? days.at(-1);
+        if (!day) throw new Error("No games on the schedule yet.");
+        const games = all.filter((g) => g.d === day).sort((a, b) => (a.tip < b.tip ? -1 : 1));
+        $("title").textContent = day === today ? "Tonight" : dateText(day, { weekday: "long", month: "short", day: "numeric" });
+
+        // Day navigation between game days.
+        const i = days.indexOf(day);
+        const link = (d, label) => (d ? `<a href="?d=${d}">${label}</a>` : `<span class="muted">${label}</span>`);
+        $("daynav").innerHTML = `${link(days[i - 1], "← " + (days[i - 1] ? dateText(days[i - 1]) : "Prev"))}${day !== today && days.includes(today) ? ` <a href="./">Today</a>` : ""} ${link(days[i + 1], (days[i + 1] ? dateText(days[i + 1]) : "Next") + " →")}`;
+
+        // Estimate: the saved (locked) one if there is one, else what it would be from games so far.
+        const done = finishedGames(data);
+        const before = done.filter((g) => g.d < day);
+        const saved = preds?.days?.[day];
+        const p = saved?.yes ?? leagueRates(before, prev, MODEL).yes;
+        const locked = saved && new Date() >= new Date(saved.firstTip);
+        $("hero").hidden = false;
+        $("yes").innerHTML = `${fmt.pct(p)}<small>Yes</small>`;
+        $("pYes").textContent = fmt.odds(americanOdds(p));
+        $("pNo").textContent = fmt.odds(americanOdds(1 - p));
+        // A concrete example of a better price, since "better" runs opposite ways for + and − odds.
+        const better = (o) => fmt.odds(o > 0 ? o + 20 : o + 20 >= -100 ? 100 : o + 20);
+        const hint = (o) => (o > 0 ? `${better(o)} or higher pays more than fair` : `${better(o)} or closer to even pays more than fair`);
+        $("sYes").textContent = hint(americanOdds(p));
+        $("sNo").textContent = hint(americanOdds(1 - p));
+        $("saved").innerHTML = saved
+          ? `<span class="tag">${locked ? "Locked" : "Saved"} ${stampText(saved.takenAt)}</span>`
+          : `<span class="tag">${day < today ? "Not saved that day" : new Date() >= new Date(games[0].tip) ? "Not saved before tip-off" : "Not saved yet"}</span>`;
+        const yesSoFar = before.filter((g) => g.yes).length;
+        $("basis").innerHTML = `League rate: this season <b>${yesSoFar} of ${before.length}</b> games${before.length ? ` (${fmt.pct(yesSoFar / before.length)})` : ""}, with last season's <b>${fmt.pct(prev.yes)}</b> counting as ${MODEL.leaguePrior / 2} games. Early in a season it's mostly last season's rate.`;
+
+        // Slate: each team's season rates and, once final, the result.
+        const splits = Object.fromEntries(teamSplits(before).map((r) => [r.tm, r]));
+        const sideRow = (g, side) => {
+          const tm = g[side], s = splits[tm], ps = prevTeams[tm];
+          const first = side === "home" ? g.hFirst : g.aFirst;
+          return `<tr><td>${teamChip(teams, tm)}</td><td>${s ? `${s.scored}/${s.gp} · ${fmt.pct0(s.scored / s.gp)}` : "–"}</td><td class="muted">${ps ? fmt.pct0(ps.scored / ps.gp) : "–"}</td><td>${g.yes != null ? firstCell(first) : "–"}</td></tr>`;
+        };
+        $("slateTitle").textContent = `${games.length} game${games.length === 1 ? "" : "s"}`;
+        $("slate").innerHTML = games.map((g) => `
+          <div class="game">
+            <div class="top"><div>${matchup(teams, g)}<div class="t">${g.state === "pre" ? timeText(g.tip) : esc(g.detail ?? "")}${g.note ? ` · ${esc(g.note)}` : ""}</div></div>${resultChip(g)}</div>
+            <table><thead><tr><th>Team</th><th>Scored by 11:00</th><th>Last szn</th><th>First point</th></tr></thead>
+            <tbody>${sideRow(g, "away")}${sideRow(g, "home")}</tbody></table>
+          </div>`).join("");
+
+        // Season tiles: this season vs last.
+        const n = done.length, yes = done.filter((g) => g.yes).length;
+        const close = done.filter((g) => !g.yes && [g.hFirst, g.aFirst].some((t) => t > FIRST_MINUTE && t <= NEAR_MISS)).length;
+        $("seasonLbl").textContent = seasonLabel(season);
+        const tile = (k, v, s) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s}</div></div>`;
+        $("tiles").innerHTML = [
+          tile("Both scored", n ? fmt.pct(yes / n) : "–", `${yes} of ${n} games`),
+          tile("Last season", fmt.pct(prev.yes), `${Math.round(prev.yes * prev.n)} of ${prev.n} games`),
+          tile("Home scored", n ? fmt.pct(done.filter((g) => g.h60).length / n) : "–", `last season ${fmt.pct(prev.home)}`),
+          tile("Away scored", n ? fmt.pct(done.filter((g) => g.a60).length / n) : "–", `last season ${fmt.pct(prev.away)}`),
+          tile("Close calls", fmt.int(close), "No, but a first point came at 10:59–10:45"),
+        ].join("");
+      } catch (err) {
+        showError(err);
+      }
+    })();
+  </script>
+</body>
+</html>

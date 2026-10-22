@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Teams · NBA First Minute</title>
+  <meta name="description" content="How often each NBA team scores, and allows a score, in the first minute of games.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="style.css?v=30a15c40">
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap">
+      <a class="wordmark" href="./">First <span>Minute</span></a>
+      <nav class="tabs">
+        <a href="./">Today</a>
+        <a href="teams.html" aria-current="page">Teams</a>
+        <a href="games.html">Games</a>
+        <a href="model.html">Model</a>
+        <button type="button" class="theme-btn" id="theme" aria-label="Switch theme">☾</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="page-head">
+      <h1>Teams</h1>
+      <p class="sub">Each team's first minute: how often it scored by 11:00, how often its opponent did, and how often both did. <span class="updated" id="updated"></span></p>
+    </div>
+    <div id="status" hidden></div>
+
+    <section class="card">
+      <div class="controls">
+        <label class="field">Season<select id="season"></select></label>
+      </div>
+      <div class="table-wrap" style="margin-top:1rem"><div id="table"></div></div>
+      <p class="note"><b>Scored</b> = the team had a point by 11:00 (home and away split beside it). <b>Allowed</b> = its opponent did. <b>Both</b> = the prop hit in its games. <b>First</b> = it scored the game's first point. <b>Median first point</b> = the Q1 clock at its first point, in a typical game. <b>Close</b> = its first point came at 10:59–10:45, just too late.</p>
+      <p class="note">Luck alone moves a team's rate about ±5 points over 82 games (±12 over 15), so most of this spread is noise. Last season, a team's rate in its odd-numbered games matched its even-numbered games only loosely (correlation 0.46 for scoring, 0.11 for allowing), and season to season not at all (0.04).</p>
+    </section>
+
+    <footer>Data from ESPN's play-by-play, refreshed automatically during the season. For information only.</footer>
+  </main>
+
+  <script src="model.js?v=3acce58e"></script>
+  <script src="common.js?v=b1addf77"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const params = getParams();
+    const state = { sort: params.sort ?? "scoredPct", dir: params.dir ?? "desc" };
+    let season, data;
+
+    const pct = (a, b) => (b ? a / b : null);
+    const cols = [
+      { key: "tm", label: "Team", cls: "l", asc: true, fmt: (r) => teamChip(data.teams, r.tm) },
+      { key: "gp", label: "GP", fmt: (r) => r.gp },
+      { key: "scoredPct", label: "Scored", cls: "key", fmt: (r) => `${fmt.pct(r.scoredPct)} <span class="muted hide-sm">${r.scored}</span>` },
+      { key: "homePct", label: "Home", cls: "hide-sm", fmt: (r) => fmt.pct0(r.homePct) },
+      { key: "awayPct", label: "Away", cls: "hide-sm", fmt: (r) => fmt.pct0(r.awayPct) },
+      { key: "allowedPct", label: "Allowed", fmt: (r) => fmt.pct(r.allowedPct) },
+      { key: "yesPct", label: "Both", fmt: (r) => fmt.pct(r.yesPct) },
+      { key: "firstPct", label: "First", cls: "hide-sm", fmt: (r) => fmt.pct0(r.firstPct) },
+      { key: "median", label: "Median first point", asc: true, sort: (r) => r.median, fmt: (r) => clockText(r.median) },
+      { key: "near", label: "Close", cls: "hide-sm", fmt: (r) => r.near },
+    ];
+
+    function render() {
+      const rows = teamSplits(finishedGames(data)).map((r) => ({
+        ...r,
+        scoredPct: pct(r.scored, r.gp), allowedPct: pct(r.allowed, r.gp), yesPct: pct(r.yes, r.gp),
+        homePct: pct(r.hScored, r.hGp), awayPct: pct(r.aScored, r.aGp), firstPct: pct(r.first, r.gp),
+      }));
+      renderTable($("table"), rows, cols, state, () => { setParams({ season, sort: state.sort, dir: state.dir }); render(); }, "No finished games yet.");
+    }
+
+    (async () => {
+      try {
+        const seasons = await getSeasons();
+        season = seasons.seasons.includes(Number(params.season)) ? Number(params.season) : seasons.current;
+        fillSeasons($("season"), seasons, season);
+        const load = async () => {
+          data = await getData(`${season}.json`);
+          $("updated").textContent = data.updated ? `Updated ${stampText(data.updated)}.` : "";
+          render();
+        };
+        $("season").addEventListener("change", async (e) => {
+          season = Number(e.target.value);
+          setParams({ season, sort: state.sort, dir: state.dir });
+          await load();
+        });
+        await load();
+      } catch (err) {
+        showError(err);
+      }
+    })();
+  </script>
+</body>
+</html>

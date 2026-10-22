@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Games · NBA First Minute</title>
+  <meta name="description" content="Every NBA game's first-minute result: when each team scored its first point, and whether both scored by 11:00.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="style.css?v=30a15c40">
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap">
+      <a class="wordmark" href="./">First <span>Minute</span></a>
+      <nav class="tabs">
+        <a href="./">Today</a>
+        <a href="teams.html">Teams</a>
+        <a href="games.html" aria-current="page">Games</a>
+        <a href="model.html">Model</a>
+        <button type="button" class="theme-btn" id="theme" aria-label="Switch theme">☾</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="page-head">
+      <h1>Games</h1>
+      <p class="sub">Every finished game: the first-quarter clock at each team's first point. Bold = by 11:00. <span class="updated" id="updated"></span></p>
+    </div>
+    <div id="status" hidden></div>
+
+    <section class="card">
+      <div class="controls">
+        <label class="field">Season<select id="season"></select></label>
+        <label class="field">Team<select id="team"><option value="">All teams</option></select></label>
+        <div class="field">Result
+          <div class="seg" id="result">
+            <button type="button" data-v="">All</button>
+            <button type="button" data-v="yes">Yes</button>
+            <button type="button" data-v="no">No</button>
+            <button type="button" data-v="close">Close calls</button>
+          </div>
+        </div>
+      </div>
+      <p class="note" id="summary"></p>
+      <div class="table-wrap" style="margin-top:.6rem"><div id="table"></div></div>
+      <p class="note"><b>Away first / Home first</b> = the Q1 clock at that team's first point. <b>Close</b> = a first point at 10:59–10:45, just after the minute. A close call is a No game where either team's first point was close.</p>
+    </section>
+
+    <footer>Data from ESPN's play-by-play, refreshed automatically during the season. For information only.</footer>
+  </main>
+
+  <script src="model.js?v=3acce58e"></script>
+  <script src="common.js?v=b1addf77"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const params = getParams();
+    const state = { sort: params.sort ?? "tip", dir: params.dir ?? "desc" };
+    let season, current, data, team = params.team ?? "", result = params.result ?? "";
+
+    const isClose = (g) => !g.yes && [g.hFirst, g.aFirst].some((t) => t > FIRST_MINUTE && t <= NEAR_MISS);
+    const cols = [
+      // The Today page only covers the current season, so only its dates link there.
+      { key: "tip", label: "Date", cls: "l", fmt: (g) => (season === current ? `<a href="./?d=${g.d}">${dateText(g.d, { month: "short", day: "numeric" })}</a>` : dateText(g.d, { month: "short", day: "numeric" })) },
+      { key: "game", label: "Game", cls: "l", nosort: true, fmt: (g) => matchup(data.teams, g) },
+      { key: "aFirst", label: "Away first", asc: true, fmt: (g) => firstCell(g.aFirst) },
+      { key: "hFirst", label: "Home first", asc: true, fmt: (g) => firstCell(g.hFirst) },
+      { key: "yes", label: "Both by 11:00", cls: "c", sort: (g) => +g.yes, fmt: (g) => resultChip(g) },
+    ];
+
+    function render() {
+      setParams({ season, team, result, sort: state.sort === "tip" ? "" : state.sort, dir: state.dir === "desc" ? "" : state.dir });
+      let games = finishedGames(data);
+      if (team) games = games.filter((g) => g.home === team || g.away === team);
+      const n = games.length, yes = games.filter((g) => g.yes).length, close = games.filter(isClose).length;
+      $("summary").innerHTML = n ? `<b>${yes} of ${n}</b> games hit Yes (${fmt.pct(yes / n)}); <b>${close}</b> of the No games were close calls.` : "";
+      if (result === "yes") games = games.filter((g) => g.yes);
+      if (result === "no") games = games.filter((g) => !g.yes);
+      if (result === "close") games = games.filter(isClose);
+      renderTable($("table"), games, cols, state, render, "No games match.");
+    }
+
+    (async () => {
+      try {
+        const seasons = await getSeasons();
+        current = seasons.current;
+        season = seasons.seasons.includes(Number(params.season)) ? Number(params.season) : seasons.current;
+        fillSeasons($("season"), seasons, season);
+        const load = async () => {
+          data = await getData(`${season}.json`);
+          $("updated").textContent = data.updated ? `Updated ${stampText(data.updated)}.` : "";
+          const abbrs = Object.keys(data.teams).sort();
+          if (team && !abbrs.includes(team)) team = "";
+          $("team").innerHTML = `<option value="">All teams</option>` + abbrs.map((t) => `<option value="${t}"${t === team ? " selected" : ""}>${esc(data.teams[t].name)}</option>`).join("");
+          render();
+        };
+        $("season").addEventListener("change", async (e) => { season = Number(e.target.value); await load(); });
+        $("team").addEventListener("change", (e) => { team = e.target.value; render(); });
+        initSeg("result", result, (v) => { result = v; render(); });
+        await load();
+      } catch (err) {
+        showError(err);
+      }
+    })();
+  </script>
+</body>
+</html>
