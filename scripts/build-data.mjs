@@ -28,15 +28,20 @@ const seasons = await readJson(seasonsFile, { current: 2026 });
 const season = Number(args.find((a) => /^\d{4}$/.test(a)) ?? seasons.current);
 const isCurrent = season === seasons.current;
 
+// On GitHub Actions a `::warning::` line shows as a yellow note on the run without failing it.
+const warn = (msg) => console.warn(process.env.GITHUB_ACTIONS ? `::warning::${msg}` : msg);
+
+// ESPN sometimes answers 200 with an empty or cut-off body, and its CDN keeps responses for 8 s
+// (max-age=8). So retries wait past that (2 s, 4 s, 8 s) and add a throwaway param to miss the cache.
 async function getJson(url, tries = 4) {
   for (let i = 1; ; i++) {
     try {
-      const res = await fetch(url, { headers: { "user-agent": "nba-first-minute (github.com/mattrudy13/nba-first-minute)" } });
+      const res = await fetch(i === 1 ? url : `${url}${url.includes("?") ? "&" : "?"}_=${Date.now()}`, { headers: { "user-agent": "nba-first-minute (github.com/mattrudy13/nba-first-minute)" } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.json();
     } catch (err) {
       if (i >= tries) throw new Error(`${url}: ${err.message}`);
-      await new Promise((r) => setTimeout(r, 500 * 2 ** i));
+      await new Promise((r) => setTimeout(r, 1000 * 2 ** i));
     }
   }
 }
@@ -101,8 +106,20 @@ if (to > seasonEnd) to = seasonEnd;
 const days = [];
 for (let d = from; d <= to; d = addDays(d, 1)) days.push(d);
 
-const boards = await mapLimit(days, 6, async (d) => ({ d, b: await getJson(`${API}/scoreboard?dates=${d.replace(/-/g, "")}`) }));
-for (const { d, b } of boards) {
+// A day ESPN still won't serve after retries is skipped with a warning rather than failing the
+// run, so the other days still update. Only every day failing (an outage) fails the run.
+const boards = await mapLimit(days, 6, async (d) => {
+  try {
+    return { d, b: await getJson(`${API}/scoreboard?dates=${d.replace(/-/g, "")}`) };
+  } catch (err) {
+    warn(`scoreboard ${d} skipped, retried next run: ${err.message}`);
+    return { d, b: null };
+  }
+});
+const missed = boards.filter(({ b }) => !b).map(({ d }) => d);
+const loaded = boards.filter(({ b }) => b);
+if (days.length && !loaded.length) throw new Error(`ESPN scoreboard failed for all ${days.length} days`);
+for (const { d, b } of loaded) {
   for (const e of b.events ?? []) {
     if (!isCountedGame(e)) continue;
     // Postponed games stay on their original date as "post" with 0–0; the makeup is its own event.
@@ -130,12 +147,15 @@ for (const { d, b } of boards) {
   }
 }
 // A game that moved off a scanned date (postponed) shouldn't linger on the old one.
-const scanned = new Set(days);
-const seen = new Set(boards.flatMap(({ b }) => (b.events ?? []).map((e) => e.id)));
+// Only days that loaded count, or a skipped day's games would all look moved and be deleted.
+const scanned = new Set(loaded.map(({ d }) => d));
+const seen = new Set(loaded.flatMap(({ b }) => (b.events ?? []).map((e) => e.id)));
 for (const [gid, g] of Object.entries(data.games)) {
   if (scanned.has(g.d) && !seen.has(gid) && !processed.has(gid)) delete data.games[gid];
 }
 data.scannedThrough = days.length ? [...days].reverse().find((d) => d <= today) ?? from : data.scannedThrough;
+// Hold scannedThrough at the first skipped day so the next run's rescan reaches back to it.
+if (missed.length && missed[0] < data.scannedThrough) data.scannedThrough = missed[0];
 
 // ---- Play-by-play for finished games ----
 
